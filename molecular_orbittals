@@ -1,0 +1,58 @@
+#!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --tasks-per-node=1
+#SBATCH -t 06:00:00
+#SBATCH -e vasp_gpu.err
+#SBATCH -p gpu-shared
+#SBATCH --gres=gpu:k80:1
+#SBATCH --export=ALL
+
+module unload intel
+module load vasp
+module load cuda
+exe=`which vasp_gpu`
+processors=$(( $SLURM_NNODES * $SLURM_NTASKS_PER_NODE ))
+mpirun -np $processors -genv I_MPI_FABRICS shm:ofa $exe >& vasp.log
+
+remote_systems_home='/oasis/scratch/comet/jkashyap/temp_project/covid19/amber/paper_sim/CORE_OPT' 
+relax_files='/oasis/scratch/comet/jkashyap/temp_project/covid19/amber/paper_sim/CORE_OPT/DFT/RELAX_MEP_MO/RELAX/FILES'
+mo_files='/oasis/scratch/comet/jkashyap/temp_project/covid19/amber/paper_sim/CORE_OPT/DFT/RELAX_MEP_MO/MO/FILES'
+
+
+
+##################################################### assigning HOMO and LUMO variables
+x=$(awk '/E-fermi/{print NR}' OUTCAR)
+echo $x>>row.txt
+tr -s ' '  '\n'< row.txt > column.txt
+rm row.txt ; mv column.txt temp.txt
+lastElement=$( tail -n 1 temp.txt )
+rm temp.txt
+tail -n +$lastElement OUTCAR >>tempB.txt
+sed -n '/band No.  band energies     occupation/,/soft charge-density along one line/p' tempB.txt >>tempC.txt
+rm tempB.txt
+grep 2.00000 tempC.txt | tail -1>>HOMO.txt
+grep -m 1 0.00000 tempC.txt >>LUMO.txt
+rm tempC.txt
+tr -s ' '  '\n'< HOMO.txt > HOMO_Col.txt
+mapfile -t myArray < HOMO_Col.txt
+nHOMO=${myArray[1]} ; unset myArray
+tr -s ' '  '\n'< LUMO.txt > LUMO_Col.txt
+mapfile -t myArray < LUMO_Col.txt
+nLUMO=${myArray[1]} ; unset myArray
+rm HOMO.txt HOMO_Col.txt LUMO.txt LUMO_Col.txt ; unset x 
+##################################################### assigning HOMO and LUMO variables ends
+
+
+##################################################### molecular orbital job
+
+mkdir MO && cd MO && cp $mo_files/* ./ && cp ../CONTCAR ./ && mv CONTCAR POSCAR && cp ../POTCAR ./ && cp ../WAVECAR ./ &&
+cp INCAR INCAR.tmp && sed "s/67/$nHOMO/" <INCAR.tmp >INCAR && rm -f INCAR.tmp &&
+mpirun -np $processors -genv I_MPI_FABRICS shm:ofa $exe >& vasp.log &&
+mkdir HOMO/ && mv PARCHG INCAR vasp.log OUTCAR HOMO/ && sh cleanup.sh && 
+cp $mo_files/INCAR ./ && cp INCAR INCAR.tmp && sed "s/67/$nLUMO/" <INCAR.tmp >INCAR && rm -f INCAR.tmp &&
+mpirun -np $processors -genv I_MPI_FABRICS shm:ofa $exe >& vasp.log &&
+mkdir LUMO/ && mv PARCHG INCAR vasp.log OUTCAR LUMO/ && sh cleanup.sh && rm WAVECAR ; unset nHOMO ; unset nLUMO
+
+##################################################### molecular orbital job ends
+exec bash
+
