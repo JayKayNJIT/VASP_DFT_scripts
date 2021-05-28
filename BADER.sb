@@ -1,0 +1,85 @@
+#!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --tasks-per-node=1
+#SBATCH -t 02:00:00
+#SBATCH -e vasp_gpu.err
+#SBATCH -p gpu-shared
+#SBATCH --gres=gpu:k80:1
+#SBATCH --export=ALL
+
+module unload intel
+module load vasp
+module load cuda
+exe=`which vasp_gpu`
+processors=$(( $SLURM_NNODES * $SLURM_NTASKS_PER_NODE ))
+
+bader_files='/oasis/scratch/comet/jkashyap/temp_project/covid19/amber/paper_sim/CORE_OPT/DFT/BADER/FILES'
+mkdir BADER && cd BADER/ && cp $bader_files/* ./ && cp ../WAVECAR ./ && cp ../KPOINTS ./ && cp ../PO* ./ &&
+# Step 2
+mpirun -np $processors -genv I_MPI_FABRICS shm:ofa $exe >& vasp.log
+# Step 3
+./chgsum.pl AECCAR0 AECCAR2
+# step 4 
+chmod +x bader && ./bader CHGCAR -ref CHGCAR_sum
+# step 5
+
+elements=() ; 
+awk 'NR==6' POSCAR>>POSCAR_temp
+tr -s ' '  '\n'< POSCAR_temp > POSCAR_temp2
+rm POSCAR_temp && mv POSCAR_temp2 POSCAR_temp
+mapfile -t elements < POSCAR_temp
+echo ${elements[@]}
+
+ele_quant=() ; rm POSCAR_temp ;
+awk 'NR==7' POSCAR>>POSCAR_temp
+tr -s ' '  '\n'< POSCAR_temp > POSCAR_temp2
+rm POSCAR_temp && mv POSCAR_temp2 POSCAR_temp
+mapfile -t ele_quant < POSCAR_temp
+echo ${ele_quant[@]} && rm POSCAR_temp
+
+rm ACF_tmp
+sed -e '1,2d' < ACF.dat>>ACF_tmp && head -n -4 ACF_tmp>>ACF_tmp2 && rm ACF_tmp 
+mv ACF_tmp2 ACF_tmp 
+
+readarray -t charge < <(cat ACF_tmp | tr -s ' ' | cut -d' ' -f6) # array name is charge
+rm ACF_tmp
+echo ${charge[@]}
+declare -i N ; declare -i C ; declare -i O ; declare -i H ; declare -i F ; declare -i S ;
+N=5 ; C=4 ; O=6 ; H=1 ; F=7 ; S=6   # updating this line/variables with the ZVAL from POTCAR files that you are using 
+ZVAL=()
+for (( i=0; i<=$(( ${#elements[*]} -1 )) ; i++ ))
+do
+if   [[ ${elements[$i]} == N ]]       # update this loop depending upon elements in your system (consider the system having max element types, if it works for it, it will work for any other system in your project)
+then
+        ZVAL+=("$N")
+elif [[ ${elements[$i]} == C ]]
+then
+        ZVAL+=("$C")
+elif [[ ${elements[$i]} == O ]]
+then
+        ZVAL+=("$O")
+elif [[ ${elements[$i]} == H ]]
+then
+        ZVAL+=("$H")
+elif [[ ${elements[$i]} == F ]]
+then
+        ZVAL+=("$F")
+else
+        ZVAL+=("$S")
+fi
+done
+echo ${#ZVAL[*]} ; echo ${ZVAL[@]} ;
+temp=0 ; array=() ; declare -i yy ;  yy=0
+for value in "${ele_quant[@]}"
+do
+for (( i=0+$temp; i<$value+$temp; i++ ))
+do
+    array+=("$i")
+    #charge[$i]=$(bc<<<"${charge[$i]} - ${ZVAL[$yy]}")
+    charge[$i]=$(bc<<<"${ZVAL[$yy]} - ${charge[$i]}")
+done
+  temp=${#array[*]}
+  yy+=1
+done
+echo ${charge[@]}>>mod_charge.txt && unset yy
+
